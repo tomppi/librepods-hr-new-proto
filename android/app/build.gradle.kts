@@ -10,17 +10,29 @@ plugins {
     id("kotlin-parcelize")
 }
 
+val localPropsFile = rootProject.file("local.properties")
 val props = Properties().apply {
-    load(rootProject.file("local.properties").inputStream())
+    if (localPropsFile.exists()) {
+        load(localPropsFile.inputStream())
+    }
 }
+
+val releaseSigningAvailable = listOf(
+    "RELEASE_STORE_FILE",
+    "RELEASE_STORE_PASSWORD",
+    "RELEASE_KEY_ALIAS",
+    "RELEASE_KEY_PASSWORD"
+).all { props[it]?.toString()?.isNotBlank() == true }
 
 android {
     signingConfigs {
-        create("release") {
-            storeFile = file(props["RELEASE_STORE_FILE"] as String)
-            storePassword = props["RELEASE_STORE_PASSWORD"] as String
-            keyAlias = props["RELEASE_KEY_ALIAS"] as String
-            keyPassword = props["RELEASE_KEY_PASSWORD"] as String
+        if (releaseSigningAvailable) {
+            create("release") {
+                storeFile = file(props["RELEASE_STORE_FILE"] as String)
+                storePassword = props["RELEASE_STORE_PASSWORD"] as String
+                keyAlias = props["RELEASE_KEY_ALIAS"] as String
+                keyPassword = props["RELEASE_KEY_PASSWORD"] as String
+            }
         }
     }
     namespace = "me.kavishdevar.librepods"
@@ -45,14 +57,18 @@ android {
                 }
             }
             buildConfigField("Boolean", "PLAY_BUILD", "false")
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigningAvailable) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             defaultConfig {
                 minSdk = 33
             }
         }
         debug {
             buildConfigField("Boolean", "PLAY_BUILD", "false")
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigningAvailable) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             versionNameSuffix = "-debug"
             defaultConfig {
                 minSdk = 33
