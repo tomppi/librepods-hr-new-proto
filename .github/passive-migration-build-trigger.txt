@@ -1,1 +1,2 @@
 Build agent/heart-rate-clean commit 5a2306f5089a9e001266b2796bb7a3f2e0e8e813
+Verification attempt 2 with corrected NDK setup
