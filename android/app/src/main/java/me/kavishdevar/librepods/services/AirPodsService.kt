@@ -160,6 +160,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
+    private val heartRateEarRemovalHandler = Handler(Looper.getMainLooper())
+    private var heartRateEarRemovalStopRunnable: Runnable? = null
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -889,20 +891,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onEarDetectionReceived(earDetection: ByteArray) {
-                sendBroadcast(Intent(AirPodsNotifications.EAR_DETECTION_DATA).apply {
-                    val list = earDetectionNotification.status
-                    val bytes = ByteArray(2)
-                    bytes[0] = list[0]
-                    bytes[1] = list[1]
-                    putExtra("data", bytes)
-                }.apply {
-                    setPackage(packageName)
-                })
+                processEarDetectionChange(earDetection)
+                broadcastEarDetectionState()
                 Log.d(
                     "AirPodsParser",
                     "Ear Detection: ${earDetectionNotification.status[0]} ${earDetectionNotification.status[1]}"
                 )
-                processEarDetectionChange(earDetection)
             }
 
             override fun onConversationAwarenessReceived(conversationAwareness: ByteArray) {
@@ -1271,6 +1265,57 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    private fun broadcastEarDetectionState() {
+        val status = earDetectionNotification.status
+        sendBroadcast(Intent(AirPodsNotifications.EAR_DETECTION_DATA).apply {
+            putExtra(
+                "data",
+                byteArrayOf(
+                    status.getOrElse(0) { 0x01.toByte() },
+                    status.getOrElse(1) { 0x01.toByte() }
+                )
+            )
+            setPackage(packageName)
+        })
+    }
+
+    private fun cancelHeartRateEarRemovalStop() {
+        heartRateEarRemovalStopRunnable?.let {
+            heartRateEarRemovalHandler.removeCallbacks(it)
+        }
+        heartRateEarRemovalStopRunnable = null
+    }
+
+    private fun scheduleHeartRateStopIfEarbudRemoved(inEarData: List<Boolean>) {
+        if (inEarData == listOf(true, true)) {
+            cancelHeartRateEarRemovalStop()
+            return
+        }
+        if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
+        if (heartRateEarRemovalStopRunnable != null) return
+
+        val stopRunnable = Runnable {
+            heartRateEarRemovalStopRunnable = null
+            if (!::aacpManager.isInitialized) return@Runnable
+
+            val status = earDetectionNotification.status
+            val bothStillInEar =
+                status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
+                    status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
+            if (!bothStillInEar && aacpManager.heartRateStreamingRequested) {
+                val stopped = aacpManager.setHeartRateStreaming(false)
+                Log.d(
+                    TAG,
+                    "Stopped RTBuddy heart-rate stream after earbud removal: stopped=$stopped"
+                )
+                broadcastEarDetectionState()
+            }
+        }
+
+        heartRateEarRemovalStopRunnable = stopRunnable
+        heartRateEarRemovalHandler.postDelayed(stopRunnable, 100L)
+    }
+
     private fun processEarDetectionChange(earDetection: ByteArray) {
         var inEar: Boolean
         val inEarData = listOf(
@@ -1279,6 +1324,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
         var justEnabledA2dp = false
         earDetectionNotification.setStatus(earDetection)
+        scheduleHeartRateStopIfEarbudRemoved(
+            listOf(
+                earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte(),
+                earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
+            )
+        )
         if (config.earDetectionEnabled) {
             val data = earDetection.copyOfRange(earDetection.size - 2, earDetection.size)
             inEar = data[0] == 0x00.toByte() && data[1] == 0x00.toByte()

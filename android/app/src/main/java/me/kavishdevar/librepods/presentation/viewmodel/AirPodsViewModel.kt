@@ -586,10 +586,25 @@ class AirPodsViewModel(
 
                     AirPodsNotifications.EAR_DETECTION_DATA -> {
                         val data = intent.getByteArrayExtra("data") ?: return
-                        val anyEarbudInEar = data.size >= 2 &&
-                            (data[0] == 0x00.toByte() || data[1] == 0x00.toByte())
+                        val bothEarbudsInEar = data.size >= 2 &&
+                            data[0] == 0x00.toByte() && data[1] == 0x00.toByte()
+                        val streamingRequested = service.aacpManager.heartRateStreamingRequested
                         _uiState.update {
-                            it.copy(heartRateEarbudsInEar = anyEarbudInEar)
+                            it.copy(
+                                heartRateEarbudsInEar = bothEarbudsInEar,
+                                heartRateStreamingEnabled = streamingRequested,
+                                heartRateReceiving =
+                                    if (streamingRequested) it.heartRateReceiving else false,
+                                latestHeartRateBpm =
+                                    if (streamingRequested) it.latestHeartRateBpm else null,
+                                latestHeartRateSampleMillis =
+                                    if (streamingRequested) it.latestHeartRateSampleMillis else null
+                            )
+                        }
+                        if (!streamingRequested) {
+                            viewModelScope.launch {
+                                flushPendingHeartRateSamplesToHealthConnect()
+                            }
                         }
                     }
 
