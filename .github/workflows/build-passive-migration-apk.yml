@@ -1,0 +1,58 @@
+name: Build passive HR bud migration APK
+
+on:
+  pull_request:
+    paths:
+      - .github/passive-migration-build-trigger.txt
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android NDK 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.13004108"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleFossDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" LibrePods-HR-passive-bud-migration-debug.apk
+          sha256sum LibrePods-HR-passive-bud-migration-debug.apk > LibrePods-HR-passive-bud-migration-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-passive-bud-migration-debug-APK
+          path: |
+            LibrePods-HR-passive-bud-migration-debug.apk
+            LibrePods-HR-passive-bud-migration-debug.apk.sha256
+          if-no-files-found: error
