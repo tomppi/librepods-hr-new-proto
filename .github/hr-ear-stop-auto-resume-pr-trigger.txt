@@ -1,1 +1,1 @@
-Rerun focused verification with the simplified guarded auto-resume call and captured Gradle tail.
+Rerun focused verification and upload the complete Gradle log before evaluating the build result.
