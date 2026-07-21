@@ -1,1 +1,1 @@
-Base marker for focused HR ear-removal stop plus optional safe auto-resume verification.
+Run focused verification for RTBuddy stop on any earbud removal plus optional 10-second safe auto-resume.
