@@ -1,1 +1,1 @@
-Rerun focused verification with anchor-based patching for RTBuddy stop on any earbud removal plus optional 10-second safe auto-resume.
+Rerun focused verification with the simplified guarded auto-resume call and captured Gradle tail.
