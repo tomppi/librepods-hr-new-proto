@@ -1,0 +1,93 @@
+name: Build HR ear-stop auto-resume APK
+
+on:
+  pull_request:
+    paths:
+      - .github/hr-ear-stop-auto-resume-pr-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out observer rollback point
+        uses: actions/checkout@v4
+        with:
+          ref: c86b0c9488397e7e52158756aec78452fdf58001
+          fetch-depth: 0
+
+      - name: Apply focused auto-resume patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt')
+          text = path.read_text()
+          old = '''                Log.d(
+                      TAG,
+                      "Stopped RTBuddy heart-rate stream after earbud removal: stopped=$stopped"
+                  )
+                  broadcastEarDetectionState()
+          '''
+          new = '''                Log.d(
+                      TAG,
+                      "Stopped RTBuddy heart-rate stream after earbud removal: stopped=$stopped"
+                  )
+                  broadcastEarDetectionState()
+                  if (config.heartRateAutoStartWhenSafe) {
+                      Log.d(TAG, "Scheduling heart-rate auto-resume after earbud removal")
+                      scheduleHeartRateAutoStartWhenSafe()
+                  }
+          '''
+          if old not in text:
+              raise SystemExit('Expected ear-removal stop block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          git commit -m 'Resume HR after earbud removal when auto-start is enabled'
+          git push --force origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install required Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleFossDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" LibrePods-HR-ear-stop-auto-resume-debug.apk
+          sha256sum LibrePods-HR-ear-stop-auto-resume-debug.apk > LibrePods-HR-ear-stop-auto-resume-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-ear-stop-auto-resume-debug-APK
+          path: |
+            LibrePods-HR-ear-stop-auto-resume-debug.apk
+            LibrePods-HR-ear-stop-auto-resume-debug.apk.sha256
+          if-no-files-found: error
