@@ -1328,6 +1328,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     "Stopped RTBuddy heart-rate stream after earbud removal: stopped=$stopped"
                 )
                 broadcastEarDetectionState()
+                if (config.heartRateAutoStartWhenSafe) scheduleHeartRateAutoStartWhenSafe()
             }
         }
 
