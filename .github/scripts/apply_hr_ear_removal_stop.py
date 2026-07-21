@@ -88,7 +88,7 @@ helpers = '''    private fun broadcastEarDetectionState() {
                 status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
                     status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
             if (!bothStillInEar && aacpManager.heartRateStreamingRequested) {
-                val stopped = aacpManager.forceStopHeartRateStreaming()
+                val stopped = aacpManager.setHeartRateStreaming(false)
                 Log.d(
                     TAG,
                     "Stopped RTBuddy heart-rate stream after earbud removal: stopped=$stopped"
@@ -115,7 +115,6 @@ status_replacement = '''        earDetectionNotification.setStatus(earDetection)
             )
         )
 '''
-# Only replace the occurrence inside processEarDetectionChange.
 process_start = service.index(process_marker)
 status_index = service.index(status_marker, process_start)
 service = service[:status_index] + status_replacement + service[status_index + len(status_marker):]
