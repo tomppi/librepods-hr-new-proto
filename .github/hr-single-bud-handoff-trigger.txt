@@ -1,1 +1,1 @@
-Trigger the one-shot passive single-bud HR handoff build and artifact upload.
+Trigger the observation-only AirPods bud-role and bud-swap build and artifact upload.
