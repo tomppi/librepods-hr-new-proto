@@ -1,0 +1,71 @@
+name: Build one-bud HR handoff APK
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-one-bud-hr.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+          path: source
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build FOSS debug APK
+        working-directory: source/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleFossDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find source/android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" LibrePods-HR-one-bud-handoff-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-one-bud-handoff-debug-APK
+          path: LibrePods-HR-one-bud-handoff-debug.apk
+          if-no-files-found: error
+
+      - name: Check out main for cleanup
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: cleanup
+
+      - name: Record run and remove temporary workflow
+        working-directory: cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'run_id=%s\nfeature_sha=%s\n' '${{ github.run_id }}' '6c427c1c2266c5317b0d72a2f09bb5a2cbcd850b' > .github/hr-one-bud-build.txt
+          rm .github/workflows/build-one-bud-hr.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/hr-one-bud-build.txt .github/workflows/build-one-bud-hr.yml
+          git commit -m "Record one-bud HR build"
+          git push origin HEAD:main
