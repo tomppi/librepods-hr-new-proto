@@ -1024,10 +1024,40 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     "AirPodsParser",
                     "Device Information: name: ${deviceInformation.name}, modelNumber: ${deviceInformation.modelNumber}, manufacturer: ${deviceInformation.manufacturer}, serialNumber: ${deviceInformation.serialNumber}, version1: ${deviceInformation.version1}, version2: ${deviceInformation.version2}, hardwareRevision: ${deviceInformation.hardwareRevision}, updaterIdentifier: ${deviceInformation.updaterIdentifier}, leftSerialNumber: ${deviceInformation.leftSerialNumber}, rightSerialNumber: ${deviceInformation.rightSerialNumber}, version3: ${deviceInformation.version3}"
                 )
-                // Store in SharedPreferences
+
+                val previousModelNumber = config.airpodsModelNumber
+                val previousModel = AirPodsModels.getModelByModelNumber(previousModelNumber)
+                val incomingModel = AirPodsModels.getModelByModelNumber(deviceInformation.modelNumber)
+                val equivalentModelFlip =
+                    previousModelNumber.isNotBlank() &&
+                        previousModelNumber != deviceInformation.modelNumber &&
+                        previousModel != null &&
+                        previousModel === incomingModel
+                val stableModelNumber =
+                    if (equivalentModelFlip) previousModelNumber else deviceInformation.modelNumber
+                val otherInformationChanged =
+                    config.airpodsName != deviceInformation.name ||
+                        config.airpodsManufacturer != deviceInformation.manufacturer ||
+                        config.airpodsSerialNumber != deviceInformation.serialNumber ||
+                        config.airpodsLeftSerialNumber != deviceInformation.leftSerialNumber ||
+                        config.airpodsRightSerialNumber != deviceInformation.rightSerialNumber ||
+                        config.airpodsVersion1 != deviceInformation.version1 ||
+                        config.airpodsVersion2 != deviceInformation.version2 ||
+                        config.airpodsVersion3 != deviceInformation.version3 ||
+                        config.airpodsHardwareRevision != deviceInformation.hardwareRevision ||
+                        config.airpodsUpdaterIdentifier != deviceInformation.updaterIdentifier
+                val suppressEquivalentModelRefresh = equivalentModelFlip && !otherInformationChanged
+
+                if (equivalentModelFlip) {
+                    Log.d(
+                        TAG,
+                        "Keeping established AirPods model $previousModelNumber when counterpart bud reported ${deviceInformation.modelNumber}; both resolve to ${previousModel?.name}"
+                    )
+                }
+
                 sharedPreferences.edit {
                     putString("name", deviceInformation.name)
-                    putString("airpods_model_number", deviceInformation.modelNumber)
+                    putString("airpods_model_number", stableModelNumber)
                     putString("airpods_manufacturer", deviceInformation.manufacturer)
                     putString("airpods_serial_number", deviceInformation.serialNumber)
                     putString("airpods_left_serial_number", deviceInformation.leftSerialNumber)
@@ -1038,9 +1068,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     putString("airpods_hardware_revision", deviceInformation.hardwareRevision)
                     putString("airpods_updater_identifier", deviceInformation.updaterIdentifier)
                 }
-                // Update config
+
                 config.airpodsName = deviceInformation.name
-                config.airpodsModelNumber = deviceInformation.modelNumber
+                config.airpodsModelNumber = stableModelNumber
                 config.airpodsManufacturer = deviceInformation.manufacturer
                 config.airpodsSerialNumber = deviceInformation.serialNumber
                 config.airpodsLeftSerialNumber = deviceInformation.leftSerialNumber
@@ -1051,7 +1081,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 config.airpodsHardwareRevision = deviceInformation.hardwareRevision
                 config.airpodsUpdaterIdentifier = deviceInformation.updaterIdentifier
 
-                val model = AirPodsModels.getModelByModelNumber(config.airpodsModelNumber)
+                val model = AirPodsModels.getModelByModelNumber(stableModelNumber)
                 if (model != null) {
                     airpodsInstance = AirPodsInstance(
                         name = config.airpodsName,
@@ -1064,13 +1094,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         version2 = config.airpodsVersion2,
                         version3 = config.airpodsVersion3,
                     )
-                    if (device != null) setMetadatas(device!!)
+                    if (!suppressEquivalentModelRefresh && device != null) {
+                        setMetadatas(device!!)
+                    }
                 }
-                sendBroadcast(
-                    Intent(AirPodsNotifications.AIRPODS_INFORMATION_UPDATED).setPackage(
-                        packageName
+
+                if (!suppressEquivalentModelRefresh) {
+                    sendBroadcast(
+                        Intent(AirPodsNotifications.AIRPODS_INFORMATION_UPDATED).setPackage(
+                            packageName
+                        )
                     )
-                )
+                } else {
+                    Log.d(
+                        TAG,
+                        "Suppressed redundant AirPods metadata/UI refresh for equivalent model flip $previousModelNumber -> ${deviceInformation.modelNumber}"
+                    )
+                }
             }
 
             @SuppressLint("NewApi")
