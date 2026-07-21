@@ -41,7 +41,12 @@ class AACPManager {
             const val REQUEST_NOTIFICATIONS: Byte = 0x0F
             const val BATTERY_INFO: Byte = 0x04
             const val CONTROL_COMMAND: Byte = 0x09
+            const val BUD_ROLE: Byte = 0x08
             const val EAR_DETECTION: Byte = 0x06
+            const val BUD_SWAP_2_PROCEDURE: Byte = 0x47
+            const val BUD_SWAP_IMMINENT_CONFIRM: Byte = 0x48
+            const val BUD_SWAP_2_COMPLETION: Byte = 0x49
+            const val BUD_SWAP_COMPLETE_CONFIRM: Byte = 0x4A
             const val CONVERSATION_AWARENESS: Byte = 0x4B
             const val INFORMATION: Byte = 0x1D
             const val RENAME: Byte = 0x1A
@@ -240,6 +245,8 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
+        fun onBudRoleReceived(role: Int?, budRole: ByteArray)
+        fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray)
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -487,6 +494,31 @@ class AACPManager {
                 }
 
                 callback?.onControlCommandReceived(packet)
+            }
+
+            Opcodes.BUD_ROLE -> {
+                val role = packet.getOrNull(6)?.toInt()?.and(0xFF)
+                val roleName = when (role) {
+                    0x01 -> "left_primary"
+                    0x02 -> "right_primary"
+                    else -> "unknown"
+                }
+                Log.d(
+                    TAG,
+                    "HR-BUD-OBS RX role=$roleName raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                )
+                callback?.onBudRoleReceived(role, packet)
+            }
+
+            Opcodes.BUD_SWAP_2_PROCEDURE,
+            Opcodes.BUD_SWAP_IMMINENT_CONFIRM,
+            Opcodes.BUD_SWAP_2_COMPLETION,
+            Opcodes.BUD_SWAP_COMPLETE_CONFIRM -> {
+                Log.d(
+                    TAG,
+                    "HR-BUD-OBS RX swap opcode=${packet[4].toInt().and(0xFF)} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                )
+                callback?.onBudSwapEventReceived(packet[4], packet)
             }
 
             Opcodes.EAR_DETECTION -> {

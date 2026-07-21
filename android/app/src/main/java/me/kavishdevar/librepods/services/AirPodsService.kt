@@ -1115,6 +1115,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
             }
 
+            override fun onBudRoleReceived(role: Int?, budRole: ByteArray) {
+                val roleName = when (role) {
+                    0x01 -> "left_primary"
+                    0x02 -> "right_primary"
+                    else -> "unknown"
+                }
+                Log.d(
+                    TAG,
+                    "HR-BUD-OBS role=$roleName streamingRequested=${aacpManager.heartRateStreamingRequested}"
+                )
+            }
+
+            override fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray) {
+                Log.d(
+                    TAG,
+                    "HR-BUD-OBS swap opcode=${opcode.toInt().and(0xFF)} streamingRequested=${aacpManager.heartRateStreamingRequested}"
+                )
+            }
+
             override fun onProximityKeysReceived(proximityKeys: ByteArray) {
                 val keys = aacpManager.parseProximityKeysResponse(proximityKeys)
                 Log.d("AirPodsParser", "Proximity keys: $keys")
