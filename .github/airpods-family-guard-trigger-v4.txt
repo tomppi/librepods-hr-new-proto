@@ -1,0 +1,1 @@
+Trigger the simplified one-shot AirPods family identification guard build.
