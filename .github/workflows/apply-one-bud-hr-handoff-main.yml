@@ -1,0 +1,154 @@
+name: Apply one-bud HR handoff from main
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-one-bud-hr-handoff-main.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+          path: feature
+
+      - name: Apply one-bud handoff behavior
+        shell: bash
+        working-directory: feature
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          text = path.read_text()
+
+          field = "    private var heartRateEarRemovalStopRunnable: Runnable? = null\n"
+          if "    private var currentPrimaryBudRole: Int? = null\n" not in text:
+              if text.count(field) != 1:
+                  raise SystemExit("Could not find the HR ear-removal state field exactly once")
+              text = text.replace(
+                  field,
+                  field + "    private var currentPrimaryBudRole: Int? = null\n",
+                  1,
+              )
+
+          callback_start = text.index("            override fun onBudRoleReceived(role: Int?, budRole: ByteArray) {")
+          callback_end = text.index("            override fun onProximityKeysReceived", callback_start)
+          new_callbacks = '''            override fun onBudRoleReceived(role: Int?, budRole: ByteArray) {
+              val previousRole = currentPrimaryBudRole
+              currentPrimaryBudRole = role
+              val previousRoleName = when (previousRole) {
+                  0x01 -> "left_primary"
+                  0x02 -> "right_primary"
+                  else -> "unknown"
+              }
+              val currentRoleName = when (role) {
+                  0x01 -> "left_primary"
+                  0x02 -> "right_primary"
+                  else -> "unknown"
+              }
+              val changed = previousRole != null && role != null && previousRole != role
+              Log.d(
+                  TAG,
+                  "HR-BUD-STATE previous=$previousRoleName current=$currentRoleName changed=$changed streamingRequested=${aacpManager.heartRateStreamingRequested}"
+              )
+          }
+
+          override fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray) {
+              val currentRoleName = when (currentPrimaryBudRole) {
+                  0x01 -> "left_primary"
+                  0x02 -> "right_primary"
+                  else -> "unknown"
+              }
+              Log.d(
+                  TAG,
+                  "HR-BUD-STATE swap opcode=${opcode.toInt().and(0xFF)} current=$currentRoleName streamingRequested=${aacpManager.heartRateStreamingRequested}"
+              )
+          }
+
+'''
+          text = text[:callback_start] + new_callbacks + text[callback_end:]
+
+          stop_start = text.index("    private fun scheduleHeartRateStopIfEarbudRemoved(inEarData: List<Boolean>) {")
+          stop_end = text.index("    private fun processEarDetectionChange", stop_start)
+          new_stop = '''    private fun scheduleHeartRateStopIfBothEarbudsRemoved(inEarData: List<Boolean>) {
+          if (inEarData.any { it }) {
+              if (inEarData.count { it } == 1 &&
+                  ::aacpManager.isInitialized &&
+                  aacpManager.heartRateStreamingRequested
+              ) {
+                  Log.d(TAG, "Keeping RTBuddy heart-rate stream active during one-bud handoff")
+              }
+              cancelHeartRateEarRemovalStop()
+              return
+          }
+          if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
+          if (heartRateEarRemovalStopRunnable != null) return
+
+          val stopRunnable = Runnable {
+              heartRateEarRemovalStopRunnable = null
+              if (!::aacpManager.isInitialized) return@Runnable
+
+              val status = earDetectionNotification.status
+              val bothStillOutOfEar =
+                  status.getOrElse(0) { 0x01.toByte() } != 0x00.toByte() &&
+                      status.getOrElse(1) { 0x01.toByte() } != 0x00.toByte()
+              if (bothStillOutOfEar && aacpManager.heartRateStreamingRequested) {
+                  val stopped = aacpManager.setHeartRateStreaming(false)
+                  Log.d(
+                      TAG,
+                      "Stopped RTBuddy heart-rate stream after both earbuds were removed: stopped=$stopped"
+                  )
+                  broadcastEarDetectionState()
+              }
+          }
+
+          heartRateEarRemovalStopRunnable = stopRunnable
+          heartRateEarRemovalHandler.postDelayed(stopRunnable, 100L)
+      }
+
+'''
+          text = text[:stop_start] + new_stop + text[stop_end:]
+          text = text.replace(
+              "scheduleHeartRateStopIfEarbudRemoved(",
+              "scheduleHeartRateStopIfBothEarbudsRemoved(",
+          )
+
+          path.write_text(text)
+          PY
+
+          rm -f .github/workflows/apply-one-bud-hr-handoff.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt .github/workflows/apply-one-bud-hr-handoff.yml
+          git commit -m "Preserve HR across one-bud handoff"
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Remove temporary workflow from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: cleanup
+
+      - name: Commit workflow cleanup
+        shell: bash
+        working-directory: cleanup
+        run: |
+          set -euo pipefail
+          rm .github/workflows/apply-one-bud-hr-handoff-main.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/apply-one-bud-hr-handoff-main.yml
+          git commit -m "Remove temporary HR handoff workflow"
+          git push origin HEAD:main
