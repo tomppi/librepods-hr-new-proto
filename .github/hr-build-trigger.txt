@@ -1,2 +1,2 @@
 Build agent/heart-rate-clean commit 6c427c1c2266c5317b0d72a2f09bb5a2cbcd850b
-Attempt 4 with Android NDK 30 installed
+Attempt 5 with Android NDK 30 and Java 21
