@@ -1,1 +1,2 @@
 Build agent/heart-rate-clean commit 6c427c1c2266c5317b0d72a2f09bb5a2cbcd850b
+Attempt 2 with Gradle failure-log capture
