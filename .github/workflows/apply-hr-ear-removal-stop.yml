@@ -1,0 +1,76 @@
+name: Apply and verify HR ear-removal stop
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  apply-build-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out automation files
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: automation
+
+      - name: Check out clean HR branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          path: source
+          fetch-depth: 0
+          submodules: true
+
+      - name: Apply minimal 100 ms RTBuddy-only ear-removal stop
+        run: python3 automation/.github/scripts/apply_hr_ear_removal_stop.py source
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install required NDK
+        run: sdkmanager "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: source/android
+        run: ./gradlew assembleFossDebug
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-100ms-ear-removal-debug-APK
+          path: source/android/app/build/outputs/apk/foss/debug/app-foss-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit verified change
+        working-directory: source
+        shell: bash
+        run: |
+          git config user.name "OpenAI"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt \
+            android/app/src/main/java/me/kavishdevar/librepods/presentation/viewmodel/AirPodsViewModel.kt
+          git commit -m "Stop HR stream when an earbud is removed"
+          git push origin HEAD:agent/heart-rate-clean
