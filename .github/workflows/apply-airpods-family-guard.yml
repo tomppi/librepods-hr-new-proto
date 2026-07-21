@@ -8,8 +8,6 @@ on:
       - opened
       - synchronize
       - reopened
-    paths:
-      - .github/airpods-family-guard-trigger.txt
 
 permissions:
   contents: write
@@ -33,6 +31,10 @@ jobs:
 
           path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
           text = path.read_text()
+          if "suppressEquivalentModelRefresh" in text:
+              print("AirPods family identification guard is already applied")
+              raise SystemExit(0)
+
           start_marker = "            override fun onDeviceInformationReceived(deviceInformation: AACPManager.Companion.AirPodsInformation) {"
           end_marker = '\n            @SuppressLint("NewApi")'
           start = text.index(start_marker)
@@ -133,10 +135,7 @@ jobs:
             }
 '''
 
-          updated = text[:start] + replacement + text[end:]
-          if updated == text:
-              raise SystemExit("AirPods family guard made no source change")
-          path.write_text(updated)
+          path.write_text(text[:start] + replacement + text[end:])
           PY
 
       - name: Set up Java 21
@@ -161,9 +160,13 @@ jobs:
         working-directory: android
         run: ./gradlew assembleFossDebug
 
-      - name: Commit verified guard
+      - name: Commit verified guard when changed
         shell: bash
         run: |
+          if git diff --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
           git config user.name "OpenAI"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
