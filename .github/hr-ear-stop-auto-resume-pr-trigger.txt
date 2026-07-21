@@ -1,1 +1,1 @@
-Rerun focused verification and upload the complete Gradle log before evaluating the build result.
+Rerun focused verification with the Android NDK license accepted before installation.
