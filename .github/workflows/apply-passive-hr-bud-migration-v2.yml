@@ -1,0 +1,96 @@
+name: Apply passive HR bud migration v2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-passive-hr-bud-migration-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out control files
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: control
+
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+          path: source
+
+      - name: Apply passive bud migration state
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../control/.github/scripts/apply_passive_hr_bud_migration.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          git add android/app/src/main/java/me/kavishdevar/librepods/presentation/viewmodel/AirPodsViewModel.kt
+          git commit -m "Preserve HR state across bud migration"
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android NDK 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.13004108"
+
+      - name: Build FOSS debug APK
+        working-directory: source/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleFossDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find source/android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" LibrePods-HR-passive-bud-migration-debug.apk
+          sha256sum LibrePods-HR-passive-bud-migration-debug.apk > LibrePods-HR-passive-bud-migration-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-passive-bud-migration-debug-APK
+          path: |
+            LibrePods-HR-passive-bud-migration-debug.apk
+            LibrePods-HR-passive-bud-migration-debug.apk.sha256
+          if-no-files-found: error
+
+      - name: Clean temporary files from main
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-passive-hr-bud-migration.yml
+          rm -f .github/workflows/apply-passive-hr-bud-migration-v2.yml
+          rm -f .github/scripts/apply_passive_hr_bud_migration.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .github
+          git commit -m "Remove temporary passive migration build files"
+          git push origin HEAD:main
