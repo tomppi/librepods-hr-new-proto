@@ -206,6 +206,11 @@ class AACPManager {
         private set
 
     var customEqCallback: ((CustomEq) -> Unit)? = null
+    var heartRateSampleCallback: ((HeartRateSample) -> Unit)? = null
+
+    @Volatile
+    var heartRateStreamingRequested: Boolean = false
+        private set
 
     fun getControlCommandStatus(identifier: ControlCommandIdentifiers): ControlCommandStatus? {
         return controlCommandStatusList.find { it.identifier == identifier }
@@ -412,6 +417,15 @@ class AACPManager {
             Log.w(
                 TAG, "Received packet too short: ${packet.joinToString(" ") { "%02X".format(it) }}"
             )
+            return
+        }
+
+        RtBuddyHeartRate.parseSample(packet)?.let { sample ->
+            if (heartRateStreamingRequested) {
+                heartRateSampleCallback?.invoke(sample)
+            } else {
+                Log.d(TAG, "Ignoring heart-rate sample because streaming is not requested")
+            }
             return
         }
 
@@ -655,6 +669,27 @@ class AACPManager {
             0x00,
             0x00,
             0x00
+        )
+    }
+
+    fun setHeartRateStreaming(enabled: Boolean): Boolean {
+        return if (enabled) {
+            val controlOk = sendHeartRateMonitorEnabled()
+            val startOk = sendDataPacket(RtBuddyHeartRate.startCommand)
+            val started = controlOk && startOk
+            if (started) heartRateStreamingRequested = true
+            started
+        } else {
+            val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
+            heartRateStreamingRequested = false
+            stopped
+        }
+    }
+
+    private fun sendHeartRateMonitorEnabled(): Boolean {
+        return sendControlCommand(
+            ControlCommandIdentifiers.HRM_STATE.value,
+            byteArrayOf(0x01, 0x00, 0x00, 0x00)
         )
     }
 
@@ -1277,6 +1312,7 @@ class AACPManager {
         oldConnectedDevices = listOf()
         connectedDevices = listOf()
         audioSource = null
+        heartRateStreamingRequested = false
     }
 
     fun parseInformationPacket(packet: ByteArray): AirPodsInformation {

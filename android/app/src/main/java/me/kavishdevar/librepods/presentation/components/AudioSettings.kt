@@ -44,6 +44,7 @@ fun AudioSettings(
 
     navigateToAdaptiveStrength: () -> Unit,
     navigateToEqualizer: () -> Unit,
+    navigateToHeartRate: () -> Unit,
 
     vendorIdHook: Boolean,
     isPremium: Boolean
@@ -91,6 +92,11 @@ fun AudioSettings(
                 StyledListItem(
                     name = stringResource(R.string.equalizer),
                     onClick = navigateToEqualizer,
+                )
+
+                StyledListItem(
+                    name = "AirPods heart rate",
+                    onClick = navigateToHeartRate,
                 )
             }
         }

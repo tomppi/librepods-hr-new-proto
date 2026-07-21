@@ -172,6 +172,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         var conversationalAwarenessVolume: Int = 43,
         var qsClickBehavior: String = "cycle",
         var bleOnlyMode: Boolean = false,
+        var heartRateAutoStartWhenSafe: Boolean = false,
 
         // AirPods state-based takeover
         var takeoverWhenDisconnected: Boolean = true,
@@ -1374,6 +1375,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 "conversational_awareness_volume", 43
             ),
             qsClickBehavior = sharedPreferences.getString("qs_click_behavior", "cycle") ?: "cycle",
+            heartRateAutoStartWhenSafe =
+                sharedPreferences.getBoolean("heart_rate_auto_start_when_safe", false),
 
             // AirPods state-based takeover
             takeoverWhenDisconnected = sharedPreferences.getBoolean(
@@ -1491,6 +1494,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             "qs_click_behavior" -> config.qsClickBehavior =
                 preferences.getString(key, "cycle") ?: "cycle"
+
+            "heart_rate_auto_start_when_safe" ->
+                config.heartRateAutoStartWhenSafe = preferences.getBoolean(key, false)
 
             // AirPods state-based takeover
             "takeover_when_disconnected" -> config.takeoverWhenDisconnected =
@@ -2633,6 +2639,30 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //        CrossDevice.isAvailable = false
     }
 
+    private fun scheduleHeartRateAutoStartWhenSafe() {
+        if (!config.heartRateAutoStartWhenSafe) return
+
+        CoroutineScope(Dispatchers.IO).launch {
+            delay(10_000L)
+
+            val bleStatus =
+                if (::bleManager.isInitialized) bleManager.getMostRecentStatus() else null
+            val anyEarbudInEar =
+                earDetectionNotification.status.any { it == 0x00.toByte() } ||
+                    bleStatus?.isLeftInEar == true ||
+                    bleStatus?.isRightInEar == true
+
+            if (!config.heartRateAutoStartWhenSafe ||
+                BluetoothConnectionManager.aacpSocket?.isConnected != true ||
+                !anyEarbudInEar ||
+                aacpManager.heartRateStreamingRequested
+            ) return@launch
+
+            val started = aacpManager.setHeartRateStreaming(true)
+            Log.d(TAG, "Heart-rate auto-start result: $started")
+        }
+    }
+
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
@@ -2771,6 +2801,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                 setPackage(packageName)
                             })
 
+                    scheduleHeartRateAutoStartWhenSafe()
                     setupStemActions()
 
                     while (socket.isConnected) {

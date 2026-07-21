@@ -24,6 +24,7 @@ import me.kavishdevar.librepods.presentation.screens.AppSettingsScreen
 import me.kavishdevar.librepods.presentation.screens.CallControlScreen
 import me.kavishdevar.librepods.presentation.screens.EqualizerRoute
 import me.kavishdevar.librepods.presentation.screens.HeadTrackingScreen
+import me.kavishdevar.librepods.presentation.screens.HeartRateRoute
 import me.kavishdevar.librepods.presentation.screens.HearingAidAdjustmentsScreen
 import me.kavishdevar.librepods.presentation.screens.HearingAidScreen
 import me.kavishdevar.librepods.presentation.screens.HearingProtectionScreen
@@ -105,6 +106,7 @@ fun AppNavGraph(
                                 navigateToPurchase = { navigate(Screen.Purchase) },
                                 navigateToAdaptiveStrength = { navigate(Screen.AdaptiveStrength) },
                                 navigateToEqualizer = { navigate(Screen.Equalizer) },
+                                navigateToHeartRate = { navigate(Screen.HeartRate) },
                                 navigateToHeadTracking = { navigate(Screen.HeadTracking) },
                                 navigateToAccessibility = { navigate(Screen.Accessibility) },
                                 navigateToVersion = { navigate(Screen.VersionInfo) },
@@ -221,6 +223,12 @@ fun AppNavGraph(
                         NavEntry(screen) {
                             if (!airPodsViewModel.isReady) LoadingScreen()
                             EqualizerRoute(airPodsViewModel)
+                        }
+
+                    Screen.HeartRate ->
+                        NavEntry(screen) {
+                            if (!airPodsViewModel.isReady) LoadingScreen()
+                            HeartRateRoute(airPodsViewModel)
                         }
 
                     is Screen.LongPress ->
