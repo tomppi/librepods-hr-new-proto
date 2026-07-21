@@ -1,6 +1,9 @@
 name: Apply and verify AirPods family guard
 
 on:
+  push:
+    branches:
+      - agent/airpods-family-guard-trigger-v3
   pull_request:
     branches:
       - main
