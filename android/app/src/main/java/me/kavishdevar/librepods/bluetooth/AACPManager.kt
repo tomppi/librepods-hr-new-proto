@@ -705,20 +705,30 @@ class AACPManager {
     }
 
     fun setHeartRateStreaming(enabled: Boolean): Boolean {
-        return if (enabled) {
-            val controlOk = sendHeartRateMonitorEnabled()
-            val startOk = sendDataPacket(RtBuddyHeartRate.startCommand)
-            val started = controlOk && startOk
-            if (started) heartRateStreamingRequested = true
-            started
-        } else {
-            val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
-            heartRateStreamingRequested = false
-            stopped
-        }
+    return if (enabled) {
+        val controlOk = sendHeartRateMonitorEnabled()
+        val startOk = sendDataPacket(RtBuddyHeartRate.startCommand)
+        val started = controlOk && startOk
+        if (started) heartRateStreamingRequested = true
+        started
+    } else {
+        stopHeartRateRtBuddyOnly()
     }
+}
 
-    private fun sendHeartRateMonitorEnabled(): Boolean {
+fun startHeartRateRtBuddyOnly(): Boolean {
+    val started = sendDataPacket(RtBuddyHeartRate.startCommand)
+    if (started) heartRateStreamingRequested = true
+    return started
+}
+
+fun stopHeartRateRtBuddyOnly(): Boolean {
+    val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
+    heartRateStreamingRequested = false
+    return stopped
+}
+
+private fun sendHeartRateMonitorEnabled(): Boolean {
         return sendControlCommand(
             ControlCommandIdentifiers.HRM_STATE.value,
             byteArrayOf(0x01, 0x00, 0x00, 0x00)
