@@ -1,0 +1,1 @@
+Trigger the corrected central disconnect recovery and primary-role reset verifier.
