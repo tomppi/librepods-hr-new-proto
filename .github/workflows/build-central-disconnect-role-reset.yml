@@ -1,0 +1,101 @@
+name: Build central disconnect HR recovery APK
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out clean HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Add central disconnect recovery preservation and role reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          text = path.read_text()
+          old = '''                } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
+                    device = null
+//                    isConnectedLocally = false
+                    popupShown = false
+                    updateNotificationContent(false)
+                    aacpManager.disconnected()
+                    BluetoothConnectionManager.aacpSocket = null
+                    BluetoothConnectionManager.attSocket = null
+                }
+'''
+          new = '''                } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
+                    device = null
+//                    isConnectedLocally = false
+                    popupShown = false
+                    updateNotificationContent(false)
+                    maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
+                    cancelHeartRateReconnectRecovery("airpods_disconnected")
+                    currentPrimaryBudRole = null
+                    if (::aacpManager.isInitialized) aacpManager.disconnected()
+                    BluetoothConnectionManager.aacpSocket = null
+                    BluetoothConnectionManager.attSocket = null
+                }
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"expected exactly one central disconnect block, found {count}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          grep -q 'maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'cancelHeartRateReconnectRecovery("airpods_disconnected")' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'currentPrimaryBudRole = null' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+      - name: Commit focused source change
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Preserve HR recovery on central disconnect
+          branch: agent/heart-rate-clean
+          file_pattern: android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;30.0.14904198'
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          apk="$(find android/app/build/outputs/apk -type f -name '*.apk' | head -1)"
+          test -n "$apk"
+          cp "$apk" artifact/LibrePods-HR-central-disconnect-role-reset-debug.apk
+          sha256sum artifact/LibrePods-HR-central-disconnect-role-reset-debug.apk > artifact/LibrePods-HR-central-disconnect-role-reset-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-central-disconnect-role-reset-debug-APK
+          path: artifact/*
+          if-no-files-found: error
