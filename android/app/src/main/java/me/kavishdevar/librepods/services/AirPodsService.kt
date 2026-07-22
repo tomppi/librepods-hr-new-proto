@@ -707,7 +707,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    isConnectedLocally = false
                     popupShown = false
                     updateNotificationContent(false)
-                    aacpManager.disconnected()
+                    maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
+                    cancelHeartRateReconnectRecovery("airpods_disconnected")
+                    currentPrimaryBudRole = null
+                    if (::aacpManager.isInitialized) aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
                 }
