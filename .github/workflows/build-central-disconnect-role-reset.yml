@@ -1,8 +1,8 @@
 name: Build central disconnect HR recovery APK
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches: [agent/central-disconnect-role-reset-build]
 
 permissions:
   contents: write
