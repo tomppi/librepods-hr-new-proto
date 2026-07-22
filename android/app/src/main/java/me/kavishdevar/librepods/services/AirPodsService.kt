@@ -163,13 +163,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
     private val heartRateEarRemovalHandler = Handler(Looper.getMainLooper())
-private var heartRateEarRemovalStopRunnable: Runnable? = null
-private val heartRateReconnectRecoveryHandler = Handler(Looper.getMainLooper())
-private var heartRateReconnectRecoveryRunnable: Runnable? = null
-private var pendingHeartRateReconnectRecovery = false
-private var pendingHeartRateReconnectRecoveryReason: String? = null
-private var roleSwapObservedWhileHeartRateRequested = false
-private var currentPrimaryBudRole: Int? = null
+    private var heartRateEarRemovalStopRunnable: Runnable? = null
+    private val heartRateReconnectRecoveryHandler = Handler(Looper.getMainLooper())
+    private var heartRateReconnectRecoveryRunnable: Runnable? = null
+    private var pendingHeartRateReconnectRecovery = false
+    private var pendingHeartRateReconnectRecoveryReason: String? = null
+    private var roleSwapObservedWhileHeartRateRequested = false
+    private var currentPrimaryBudRole: Int? = null
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -1124,14 +1124,14 @@ private var currentPrimaryBudRole: Int? = null
             }
 
             override fun onBudRoleReceived(role: Int?, budRole: ByteArray) {
-        handleBudRoleReceived(role, budRole)
-    }
+                handleBudRoleReceived(role, budRole)
+            }
 
-    override fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray) {
-        handleBudSwapEventReceived(opcode, budSwap)
-    }
+            override fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray) {
+                handleBudSwapEventReceived(opcode, budSwap)
+            }
 
-    override fun onProximityKeysReceived(proximityKeys: ByteArray) {
+            override fun onProximityKeysReceived(proximityKeys: ByteArray) {
                 val keys = aacpManager.parseProximityKeysResponse(proximityKeys)
                 Log.d("AirPodsParser", "Proximity keys: $keys")
                 sharedPreferences.edit {
@@ -1441,42 +1441,42 @@ private var currentPrimaryBudRole: Int? = null
     }
 
     private fun cancelHeartRateEarRemovalStop() {
-    heartRateEarRemovalStopRunnable?.let {
-        heartRateEarRemovalHandler.removeCallbacks(it)
-    }
-    heartRateEarRemovalStopRunnable = null
-}
-
-private fun scheduleHeartRateStopIfEarbudRemoved(inEarData: List<Boolean>) {
-    if (inEarData.any { it }) {
-        cancelHeartRateEarRemovalStop()
-        return
-    }
-    if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
-    if (heartRateEarRemovalStopRunnable != null) return
-
-    val stopRunnable = Runnable {
-        heartRateEarRemovalStopRunnable = null
-        if (!::aacpManager.isInitialized) return@Runnable
-        val status = earDetectionNotification.status
-        val anyStillInEar =
-            status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() ||
-                status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
-        if (!anyStillInEar && aacpManager.heartRateStreamingRequested) {
-            cancelHeartRateReconnectRecovery("both_buds_out", clearPending = true)
-            val stopped = aacpManager.stopHeartRateRtBuddyOnly()
-            Log.d(
-                TAG,
-                "Stopped RTBuddy heart-rate stream after both earbuds were removed: stopped=$stopped"
-            )
-            broadcastEarDetectionState()
+        heartRateEarRemovalStopRunnable?.let {
+            heartRateEarRemovalHandler.removeCallbacks(it)
         }
+        heartRateEarRemovalStopRunnable = null
     }
-    heartRateEarRemovalStopRunnable = stopRunnable
-    heartRateEarRemovalHandler.postDelayed(stopRunnable, 100L)
-}
 
-private fun processEarDetectionChange(earDetection: ByteArray) {
+    private fun scheduleHeartRateStopIfEarbudRemoved(inEarData: List<Boolean>) {
+        if (inEarData.any { it }) {
+            cancelHeartRateEarRemovalStop()
+            return
+        }
+        if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
+        if (heartRateEarRemovalStopRunnable != null) return
+
+        val stopRunnable = Runnable {
+            heartRateEarRemovalStopRunnable = null
+            if (!::aacpManager.isInitialized) return@Runnable
+            val status = earDetectionNotification.status
+            val anyStillInEar =
+                status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() ||
+                    status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
+            if (!anyStillInEar && aacpManager.heartRateStreamingRequested) {
+                cancelHeartRateReconnectRecovery("both_buds_out", clearPending = true)
+                val stopped = aacpManager.stopHeartRateRtBuddyOnly()
+                Log.d(
+                    TAG,
+                    "Stopped RTBuddy heart-rate stream after both earbuds were removed: stopped=$stopped"
+                )
+                broadcastEarDetectionState()
+            }
+        }
+        heartRateEarRemovalStopRunnable = stopRunnable
+        heartRateEarRemovalHandler.postDelayed(stopRunnable, 100L)
+    }
+
+    private fun processEarDetectionChange(earDetection: ByteArray) {
         var inEar: Boolean
         val inEarData = listOf(
             earDetectionNotification.status[0] == 0x00.toByte(),
@@ -3053,9 +3053,9 @@ private fun processEarDetectionChange(earDetection: ByteArray) {
                             })
 
                     val reconnectRecoveryScheduled =
-                schedulePendingHeartRateReconnectRecovery("aacp_connected_after_handshake")
-            if (!reconnectRecoveryScheduled) scheduleHeartRateAutoStartWhenSafe()
-            setupStemActions()
+                        schedulePendingHeartRateReconnectRecovery("aacp_connected_after_handshake")
+                    if (!reconnectRecoveryScheduled) scheduleHeartRateAutoStartWhenSafe()
+                    setupStemActions()
 
                     while (socket.isConnected) {
                         try {
