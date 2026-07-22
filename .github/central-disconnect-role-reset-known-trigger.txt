@@ -1,1 +1,2 @@
 Trigger the path-filtered central disconnect recovery and primary-role reset verifier.
+Synchronize after marking the temporary PR ready for review.
