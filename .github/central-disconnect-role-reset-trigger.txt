@@ -1,2 +1,2 @@
 Trigger the focused central AIRPODS_DISCONNECTED recovery preservation and primary-role reset build.
-Retrigger after the workflow was registered on main.
+Start the branch-scoped push workflow.
