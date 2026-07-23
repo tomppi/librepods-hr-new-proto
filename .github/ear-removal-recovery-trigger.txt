@@ -1,1 +1,1 @@
-Trigger the ear-removal HR recovery build.
+Trigger the corrected ear-removal HR recovery build.
