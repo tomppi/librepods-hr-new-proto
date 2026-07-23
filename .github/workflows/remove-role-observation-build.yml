@@ -1,7 +1,9 @@
 name: Build without role observation
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/remove-role-observation-build
     paths:
       - .github/remove-role-observation-trigger.txt
 
