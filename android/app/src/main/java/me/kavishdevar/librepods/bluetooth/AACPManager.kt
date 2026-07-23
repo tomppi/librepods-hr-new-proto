@@ -722,11 +722,15 @@ class AACPManager {
         return started
     }
 
-    fun stopHeartRateRtBuddyOnly(): Boolean {
-        val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
-        heartRateStreamingRequested = false
-        return stopped
-    }
+fun stopHeartRateRtBuddyOnly(): Boolean {
+    val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
+    heartRateStreamingRequested = false
+    return stopped
+}
+
+fun pauseHeartRateRtBuddyForRecovery(): Boolean {
+    return sendDataPacket(RtBuddyHeartRate.stopCommand)
+}
 
     private fun sendHeartRateMonitorEnabled(): Boolean {
         return sendControlCommand(
