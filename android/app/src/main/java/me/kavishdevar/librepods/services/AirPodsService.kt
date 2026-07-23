@@ -1405,7 +1405,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val stopped = aacpManager.stopHeartRateRtBuddyOnly()
             Log.d(
                 TAG,
-                "HR-RECONNECT-RECOVERY RTBuddy-only stop on fresh socket: stopped=$stopped reason=$originalReason"
+                "HR-RECONNECT-RECOVERY RTBuddy-only stop on active AACP socket: stopped=$stopped reason=$originalReason"
             )
 
             heartRateReconnectRecoveryHandler.postDelayed(Runnable {
@@ -1438,7 +1438,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
         Log.d(
             TAG,
-            "HR-RECONNECT-RECOVERY scheduled in ${HEART_RATE_RECONNECT_RECOVERY_DELAY_MS}ms after fresh AACP socket: reason=$originalReason trigger=$reason"
+            "HR-RECONNECT-RECOVERY scheduled in ${HEART_RATE_RECONNECT_RECOVERY_DELAY_MS}ms after recovery trigger: reason=$originalReason trigger=$reason"
         )
         return true
     }
@@ -1487,12 +1487,19 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
         var justEnabledA2dp = false
         earDetectionNotification.setStatus(earDetection)
-        scheduleHeartRateStopIfEarbudRemoved(
-            listOf(
-                earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte(),
-                earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
-            )
+        val updatedInEarData = listOf(
+            earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte(),
+            earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
         )
+        if (inEarData.count { it } == 2 &&
+            updatedInEarData.count { it } == 1 &&
+            ::aacpManager.isInitialized &&
+            aacpManager.heartRateStreamingRequested
+        ) {
+            armHeartRateReconnectRecovery("earbud_removed")
+            schedulePendingHeartRateReconnectRecovery("earbud_removed_existing_socket")
+        }
+        scheduleHeartRateStopIfEarbudRemoved(updatedInEarData)
         if (config.earDetectionEnabled) {
             val data = earDetection.copyOfRange(earDetection.size - 2, earDetection.size)
             inEar = data[0] == 0x00.toByte() && data[1] == 0x00.toByte()
