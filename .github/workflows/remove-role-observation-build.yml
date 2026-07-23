@@ -1,0 +1,205 @@
+name: Build without role observation
+
+on:
+  pull_request:
+    paths:
+      - .github/remove-role-observation-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Remove bud role and swap observation code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          service_path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          manager_path = Path("android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt")
+
+          service = service_path.read_text()
+          manager = manager_path.read_text()
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          def remove_range(text: str, start_marker: str, end_marker: str, label: str) -> str:
+              start = text.find(start_marker)
+              if start < 0:
+                  raise SystemExit(f"{label}: start marker not found")
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f"{label}: end marker not found")
+              return text[:start] + text[end:]
+
+          service = replace_once(
+              service,
+              "    private var roleSwapObservedWhileHeartRateRequested = false\n"
+              "    private var currentPrimaryBudRole: Int? = null\n",
+              "",
+              "service role fields",
+          )
+          service = replace_once(
+              service,
+              "                    currentPrimaryBudRole = null\n",
+              "",
+              "disconnect role reset",
+          )
+          service = replace_once(
+              service,
+              "            override fun onBudRoleReceived(role: Int?, budRole: ByteArray) {\n"
+              "                handleBudRoleReceived(role, budRole)\n"
+              "            }\n\n"
+              "            override fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray) {\n"
+              "                handleBudSwapEventReceived(opcode, budSwap)\n"
+              "            }\n\n",
+              "",
+              "service packet callbacks",
+          )
+          service = remove_range(
+              service,
+              "    private fun budRoleName(role: Int?): String = when (role) {",
+              "    private fun armHeartRateReconnectRecovery(reason: String) {",
+              "service role handlers",
+          )
+          service = replace_once(
+              service,
+              "        roleSwapObservedWhileHeartRateRequested = false\n",
+              "",
+              "recovery role flag reset",
+          )
+          service = remove_range(
+              service,
+              "    private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {",
+              "private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {",
+              "disconnect recovery helper",
+          )
+          replacement_helper = '''    private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {
+              val wasHrRequested = ::aacpManager.isInitialized && aacpManager.heartRateStreamingRequested
+              if (wasHrRequested || pendingHeartRateReconnectRecovery) {
+                  armHeartRateReconnectRecovery(
+                      "disconnect_$reason wasHrRequested=$wasHrRequested previous=$pendingHeartRateReconnectRecoveryReason"
+                  )
+              }
+          }
+
+'''
+          marker = "private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {"
+          service = service.replace(marker, replacement_helper + marker, 1)
+
+          manager = replace_once(manager, "            const val BUD_ROLE: Byte = 0x08\n", "", "BUD_ROLE opcode")
+          manager = replace_once(
+              manager,
+              "            const val BUD_SWAP_2_PROCEDURE: Byte = 0x47\n"
+              "            const val BUD_SWAP_IMMINENT_CONFIRM: Byte = 0x48\n"
+              "            const val BUD_SWAP_2_COMPLETION: Byte = 0x49\n"
+              "            const val BUD_SWAP_COMPLETE_CONFIRM: Byte = 0x4A\n",
+              "",
+              "bud swap opcodes",
+          )
+          manager = replace_once(
+              manager,
+              "        fun onBudRoleReceived(role: Int?, budRole: ByteArray)\n"
+              "        fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray)\n",
+              "",
+              "manager role callbacks",
+          )
+          manager = remove_range(
+              manager,
+              "            Opcodes.BUD_ROLE -> {",
+              "            Opcodes.EAR_DETECTION -> {",
+              "manager role receive cases",
+          )
+
+          forbidden_service = [
+              "currentPrimaryBudRole",
+              "roleSwapObservedWhileHeartRateRequested",
+              "budRoleName(",
+              "handleBudRoleReceived",
+              "handleBudSwapEventReceived",
+              "armHeartRateReconnectRecoveryFromRoleEvent",
+              "onBudRoleReceived",
+              "onBudSwapEventReceived",
+              "HR-ROLE-STATE",
+          ]
+          forbidden_manager = [
+              "BUD_ROLE",
+              "BUD_SWAP_",
+              "onBudRoleReceived",
+              "onBudSwapEventReceived",
+              "HR-BUD-OBS",
+          ]
+          for token in forbidden_service:
+              if token in service:
+                  raise SystemExit(f"stale service token remains: {token}")
+          for token in forbidden_manager:
+              if token in manager:
+                  raise SystemExit(f"stale manager token remains: {token}")
+
+          service_path.write_text(service)
+          manager_path.write_text(manager)
+          PY
+
+          git diff --check
+          grep -q 'armHeartRateReconnectRecovery("earbud_removed")' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'pauseHeartRateRtBuddyForRecovery()' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'restoreHeartRateRequestForRecovery()' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          ! grep -R -E 'HR-BUD-OBS|HR-ROLE-STATE|currentPrimaryBudRole|BUD_SWAP_2|onBudRoleReceived|onBudSwapEventReceived' \
+              android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt \
+              android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt \
+            android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          git commit -m 'Remove unused bud role packet observation'
+          git push --force origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifact/LibrePods-HR-no-role-observation-debug.apk
+          sha256sum artifact/LibrePods-HR-no-role-observation-debug.apk | tee artifact/LibrePods-HR-no-role-observation-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-no-role-observation-debug-APK
+          path: artifact/
+          if-no-files-found: error
