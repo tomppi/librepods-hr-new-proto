@@ -1,0 +1,347 @@
+name: Build final active HR recovery APK
+
+on:
+  pull_request:
+    paths:
+      - .github/final-active-hr-recovery-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Preserve active HR request across fresh socket handover
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          service_path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          manager_path = Path("android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt")
+          service = service_path.read_text()
+          manager = manager_path.read_text()
+
+          def replace_function_range(text, start_signature, end_signature, replacement):
+              signature_pos = text.find(start_signature)
+              if signature_pos < 0:
+                  raise SystemExit(f"start signature not found: {start_signature}")
+              start = text.rfind("\n", 0, signature_pos) + 1
+              end_signature_pos = text.find(end_signature, signature_pos)
+              if end_signature_pos < 0:
+                  raise SystemExit(f"end signature not found: {end_signature}")
+              end = text.rfind("\n", 0, end_signature_pos) + 1
+              return text[:start] + replacement.rstrip() + "\n\n" + text[end:]
+
+          manager_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  fun stopHeartRateRtBuddyOnly(): Boolean {
+                      val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
+                      heartRateStreamingRequested = false
+                      return stopped
+                  }
+
+                  fun pauseHeartRateRtBuddyForRecovery(): Boolean {
+                      return sendDataPacket(RtBuddyHeartRate.stopCommand)
+                  }
+
+                  fun restoreHeartRateRequestForRecovery() {
+                      heartRateStreamingRequested = true
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          manager = replace_function_range(
+              manager,
+              "fun stopHeartRateRtBuddyOnly(): Boolean {",
+              "private fun sendHeartRateMonitorEnabled(): Boolean {",
+              manager_block,
+          )
+
+          role_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {
+                      val previousRole = currentPrimaryBudRole
+                      currentPrimaryBudRole = role
+                      val hrRequested = ::aacpManager.isInitialized && aacpManager.heartRateStreamingRequested
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_role previous=${budRoleName(previousRole)} current=${budRoleName(role)} hrRequested=$hrRequested pending=$pendingHeartRateReconnectRecovery raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
+                      if (role != null && previousRole != null && previousRole != role) {
+                          Log.d(
+                              TAG,
+                              "HR-ROLE-STATE role changed; recovery is triggered only by physical ear removal while HR is active"
+                          )
+                      }
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          service = replace_function_range(
+              service,
+              "private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {",
+              "private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              role_block,
+          )
+
+          swap_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {
+                      val opcodeValue = opcode.toInt().and(0xFF)
+                      val name = when (opcodeValue) {
+                          0x47 -> "bud_swap_2_procedure"
+                          0x48 -> "swap_imminent_confirm"
+                          0x49 -> "bud_swap_2_completion"
+                          0x4A -> "swap_complete_confirm"
+                          else -> "unknown_swap_$opcodeValue"
+                      }
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_swap_event name=$name currentRole=${budRoleName(currentPrimaryBudRole)} requested=${aacpManager.heartRateStreamingRequested} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
+                      Log.d(TAG, "HR-ROLE-STATE swap observed; recovery remains ear-removal-triggered only")
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          service = replace_function_range(
+              service,
+              "private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              "private fun armHeartRateReconnectRecovery(reason: String) {",
+              swap_block,
+          )
+
+          cancel_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun cancelHeartRateReconnectRecovery(reason: String, clearPending: Boolean = false) {
+                      heartRateReconnectRecoveryRunnable?.let {
+                          heartRateReconnectRecoveryHandler.removeCallbacks(it)
+                      }
+                      heartRateReconnectRecoveryRunnable = null
+                      heartRateReconnectRecoveryJob?.cancel()
+                      heartRateReconnectRecoveryJob = null
+                      if (clearPending) {
+                          pendingHeartRateReconnectRecovery = false
+                          pendingHeartRateReconnectRecoveryReason = null
+                          roleSwapObservedWhileHeartRateRequested = false
+                      }
+                      Log.d(TAG, "HR-RECONNECT-RECOVERY cancelled: reason=$reason clearPending=$clearPending")
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          service = replace_function_range(
+              service,
+              "private fun cancelHeartRateReconnectRecovery(reason: String, clearPending: Boolean = false) {",
+              "private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {",
+              cancel_block,
+          )
+
+          schedule_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {
+                      if (!pendingHeartRateReconnectRecovery) return false
+                      if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) {
+                          cancelHeartRateReconnectRecovery("hr_not_active_$reason", clearPending = true)
+                          return false
+                      }
+                      if (heartRateReconnectRecoveryRunnable != null ||
+                          heartRateReconnectRecoveryJob?.isActive == true
+                      ) {
+                          Log.d(
+                              TAG,
+                              "HR-RECONNECT-RECOVERY already scheduled or running: reason=$pendingHeartRateReconnectRecoveryReason trigger=$reason"
+                          )
+                          return true
+                      }
+
+                      val originalReason = pendingHeartRateReconnectRecoveryReason ?: reason
+                      val runnable = Runnable {
+                          heartRateReconnectRecoveryRunnable = null
+                          if (!pendingHeartRateReconnectRecovery ||
+                              !::aacpManager.isInitialized ||
+                              !aacpManager.heartRateStreamingRequested ||
+                              BluetoothConnectionManager.aacpSocket?.isConnected != true ||
+                              !currentAnyEarbudInEar()
+                          ) {
+                              if (::aacpManager.isInitialized && !aacpManager.heartRateStreamingRequested) {
+                                  pendingHeartRateReconnectRecovery = false
+                                  pendingHeartRateReconnectRecoveryReason = null
+                              }
+                              Log.d(TAG, "HR-RECONNECT-RECOVERY skipped because HR is no longer active or socket/ear state is unsafe: reason=$originalReason")
+                              return@Runnable
+                          }
+
+                          heartRateReconnectRecoveryJob = CoroutineScope(Dispatchers.IO).launch {
+                              try {
+                                  if (!pendingHeartRateReconnectRecovery ||
+                                      !aacpManager.heartRateStreamingRequested ||
+                                      BluetoothConnectionManager.aacpSocket?.isConnected != true ||
+                                      !currentAnyEarbudInEar()
+                                  ) {
+                                      Log.d(TAG, "HR-RECONNECT-RECOVERY IO start skipped: reason=$originalReason")
+                                      return@launch
+                                  }
+
+                                  val stopped = aacpManager.pauseHeartRateRtBuddyForRecovery()
+                                  Log.d(
+                                      TAG,
+                                      "HR-RECONNECT-RECOVERY RTBuddy-only pause on IO thread: stopped=$stopped reason=$originalReason"
+                                  )
+                                  if (!stopped) return@launch
+
+                                  delay(HEART_RATE_RECONNECT_RESTART_GAP_MS)
+
+                                  if (!pendingHeartRateReconnectRecovery ||
+                                      !aacpManager.heartRateStreamingRequested ||
+                                      BluetoothConnectionManager.aacpSocket?.isConnected != true ||
+                                      !currentAnyEarbudInEar()
+                                  ) {
+                                      if (!aacpManager.heartRateStreamingRequested) {
+                                          pendingHeartRateReconnectRecovery = false
+                                          pendingHeartRateReconnectRecoveryReason = null
+                                      }
+                                      Log.d(TAG, "HR-RECONNECT-RECOVERY RTBuddy restart skipped because HR was toggled off or state became unsafe: reason=$originalReason")
+                                      return@launch
+                                  }
+
+                                  val started = aacpManager.startHeartRateRtBuddyOnly()
+                                  pendingHeartRateReconnectRecovery = !started
+                                  if (started) {
+                                      pendingHeartRateReconnectRecoveryReason = null
+                                      roleSwapObservedWhileHeartRateRequested = false
+                                  }
+                                  Log.d(
+                                      TAG,
+                                      "HR-RECONNECT-RECOVERY RTBuddy-only restart result started=$started reason=$originalReason pendingAfter=$pendingHeartRateReconnectRecovery"
+                                  )
+                              } finally {
+                                  heartRateReconnectRecoveryJob = null
+                              }
+                          }
+                      }
+
+                      heartRateReconnectRecoveryRunnable = runnable
+                      heartRateReconnectRecoveryHandler.postDelayed(
+                          runnable,
+                          HEART_RATE_RECONNECT_RECOVERY_DELAY_MS
+                      )
+                      Log.d(
+                          TAG,
+                          "HR-RECONNECT-RECOVERY scheduled in ${HEART_RATE_RECONNECT_RECOVERY_DELAY_MS}ms after active ear-removal trigger: reason=$originalReason trigger=$reason"
+                      )
+                      return true
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          service = replace_function_range(
+              service,
+              "private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {",
+              "private fun cancelHeartRateEarRemovalStop() {",
+              schedule_block,
+          )
+
+          disconnect_old = textwrap.dedent(
+              '''
+                                      maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
+                                      cancelHeartRateReconnectRecovery("airpods_disconnected")
+                                      currentPrimaryBudRole = null
+                                      if (::aacpManager.isInitialized) aacpManager.disconnected()
+                                      BluetoothConnectionManager.aacpSocket = null
+                                      BluetoothConnectionManager.attSocket = null
+              '''
+          ).strip("\n")
+          disconnect_new = textwrap.dedent(
+              '''
+                                      maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
+                                      val preserveHeartRateRequest =
+                                          ::aacpManager.isInitialized &&
+                                              pendingHeartRateReconnectRecovery &&
+                                              aacpManager.heartRateStreamingRequested
+                                      cancelHeartRateReconnectRecovery("airpods_disconnected")
+                                      currentPrimaryBudRole = null
+                                      if (::aacpManager.isInitialized) {
+                                          aacpManager.disconnected()
+                                          if (preserveHeartRateRequest) {
+                                              aacpManager.restoreHeartRateRequestForRecovery()
+                                              Log.d(TAG, "HR-RECONNECT-RECOVERY preserved active HR request for fresh AACP socket")
+                                          }
+                                      }
+                                      BluetoothConnectionManager.aacpSocket = null
+                                      BluetoothConnectionManager.attSocket = null
+              '''
+          ).strip("\n")
+          if service.count(disconnect_old) != 1:
+              raise SystemExit(f"central disconnect block count={service.count(disconnect_old)}")
+          service = service.replace(disconnect_old, disconnect_new, 1)
+
+          service_path.write_text(service)
+          manager_path.write_text(manager)
+          PY
+
+          git diff --check
+          grep -q 'restoreHeartRateRequestForRecovery' android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          grep -q 'preserveHeartRateRequest' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'pauseHeartRateRtBuddyForRecovery' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'recovery remains ear-removal-triggered only' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          git commit -m 'Preserve active HR recovery across fresh socket handover'
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifact/LibrePods-HR-final-active-nonblocking-recovery-debug.apk
+          sha256sum artifact/LibrePods-HR-final-active-nonblocking-recovery-debug.apk | tee artifact/LibrePods-HR-final-active-nonblocking-recovery-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-final-active-nonblocking-recovery-debug-APK
+          path: artifact/
+          if-no-files-found: error
