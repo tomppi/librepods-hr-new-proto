@@ -732,6 +732,10 @@ fun pauseHeartRateRtBuddyForRecovery(): Boolean {
     return sendDataPacket(RtBuddyHeartRate.stopCommand)
 }
 
+    fun restoreHeartRateRequestForRecovery() {
+        heartRateStreamingRequested = true
+    }
+
     private fun sendHeartRateMonitorEnabled(): Boolean {
         return sendControlCommand(
             ControlCommandIdentifiers.HRM_STATE.value,

@@ -710,9 +710,19 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     popupShown = false
                     updateNotificationContent(false)
                     maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
+                    val preserveHeartRateRequest =
+                        ::aacpManager.isInitialized &&
+                            pendingHeartRateReconnectRecovery &&
+                            aacpManager.heartRateStreamingRequested
                     cancelHeartRateReconnectRecovery("airpods_disconnected")
                     currentPrimaryBudRole = null
-                    if (::aacpManager.isInitialized) aacpManager.disconnected()
+                    if (::aacpManager.isInitialized) {
+                        aacpManager.disconnected()
+                        if (preserveHeartRateRequest) {
+                            aacpManager.restoreHeartRateRequestForRecovery()
+                            Log.d(TAG, "HR-RECONNECT-RECOVERY preserved active HR request for fresh AACP socket")
+                        }
+                    }
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
                 }
