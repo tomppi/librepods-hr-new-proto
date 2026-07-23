@@ -24,13 +24,21 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
           import textwrap
 
           service_path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
           manager_path = Path("android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt")
           service = service_path.read_text()
           manager = manager_path.read_text()
+
+          def replace_section(text, start_marker, end_marker, replacement):
+              start = text.find(start_marker)
+              if start < 0:
+                  raise SystemExit(f"start marker not found: {start_marker}")
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f"end marker not found: {end_marker}")
+              return text[:start] + replacement.rstrip() + "\n\n" + text[end:]
 
           if "import kotlinx.coroutines.Job\n" not in service:
               service = service.replace(
@@ -49,63 +57,78 @@ jobs:
                   1,
               )
 
-          manager_anchor = textwrap.dedent(
+          manager_block = textwrap.dedent(
               '''
                   fun stopHeartRateRtBuddyOnly(): Boolean {
                       val stopped = sendDataPacket(RtBuddyHeartRate.stopCommand)
                       heartRateStreamingRequested = false
                       return stopped
                   }
-              '''
-          ).strip("\n")
-          manager_replacement = manager_anchor + textwrap.dedent(
-              '''
-
 
                   fun pauseHeartRateRtBuddyForRecovery(): Boolean {
                       return sendDataPacket(RtBuddyHeartRate.stopCommand)
                   }
               '''
-          ).rstrip("\n")
-          if "pauseHeartRateRtBuddyForRecovery" not in manager:
-              if manager.count(manager_anchor) != 1:
-                  raise SystemExit(f"manager stop anchor count={manager.count(manager_anchor)}")
-              manager = manager.replace(manager_anchor, manager_replacement, 1)
-
-          role_pattern = re.compile(
-              r"        if \(role != null && previousRole != null && previousRole != role\) \{\n"
-              r"            armHeartRateReconnectRecoveryFromRoleEvent\(\n"
-              r"                \"bud_role_\$\{budRoleName\(previousRole\)\}_to_\$\{budRoleName\(role\)\}\"\n"
-              r"            \)\n"
-              r"        \}"
+          ).strip("\n")
+          manager = replace_section(
+              manager,
+              "    fun stopHeartRateRtBuddyOnly(): Boolean {",
+              "    private fun sendHeartRateMonitorEnabled(): Boolean {",
+              manager_block,
           )
-          role_replacement = textwrap.dedent(
+
+          role_block = textwrap.dedent(
               '''
+                  private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {
+                      val previousRole = currentPrimaryBudRole
+                      currentPrimaryBudRole = role
+                      val hrRequested = ::aacpManager.isInitialized && aacpManager.heartRateStreamingRequested
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_role previous=${budRoleName(previousRole)} current=${budRoleName(role)} hrRequested=$hrRequested pending=$pendingHeartRateReconnectRecovery raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
                       if (role != null && previousRole != null && previousRole != role) {
                           Log.d(
                               TAG,
-                              "HR-ROLE-STATE role changed while recovery remains ear-removal-triggered only"
+                              "HR-ROLE-STATE role changed; recovery is triggered only by physical ear removal while HR is active"
                           )
                       }
+                  }
               '''
           ).strip("\n")
-          service, role_count = role_pattern.subn(role_replacement, service, count=1)
-          if role_count != 1:
-              raise SystemExit(f"role trigger replacement count={role_count}")
-
-          swap_line = "        armHeartRateReconnectRecoveryFromRoleEvent(name)\n"
-          if service.count(swap_line) != 1:
-              raise SystemExit(f"swap trigger count={service.count(swap_line)}")
-          service = service.replace(
-              swap_line,
-              "        Log.d(TAG, \"HR-ROLE-STATE swap observed; recovery remains ear-removal-triggered only\")\n",
-              1,
+          service = replace_section(
+              service,
+              "    private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {",
+              "    private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              role_block,
           )
 
-          cancel_pattern = re.compile(
-              r"    private fun cancelHeartRateReconnectRecovery\(reason: String, clearPending: Boolean = false\) \{.*?\n    \}\n\n(?=    private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect)",
-              re.S,
+          swap_block = textwrap.dedent(
+              '''
+                  private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {
+                      val opcodeValue = opcode.toInt().and(0xFF)
+                      val name = when (opcodeValue) {
+                          0x47 -> "bud_swap_2_procedure"
+                          0x48 -> "swap_imminent_confirm"
+                          0x49 -> "bud_swap_2_completion"
+                          0x4A -> "swap_complete_confirm"
+                          else -> "unknown_swap_$opcodeValue"
+                      }
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_swap_event name=$name currentRole=${budRoleName(currentPrimaryBudRole)} requested=${aacpManager.heartRateStreamingRequested} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
+                      Log.d(TAG, "HR-ROLE-STATE swap observed; recovery remains ear-removal-triggered only")
+                  }
+              '''
+          ).strip("\n")
+          service = replace_section(
+              service,
+              "    private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              "    private fun armHeartRateReconnectRecovery(reason: String) {",
+              swap_block,
           )
+
           cancel_block = textwrap.dedent(
               '''
                   private fun cancelHeartRateReconnectRecovery(reason: String, clearPending: Boolean = false) {
@@ -124,14 +147,13 @@ jobs:
                   }
               '''
           ).strip("\n")
-          service, cancel_count = cancel_pattern.subn(cancel_block + "\n\n", service, count=1)
-          if cancel_count != 1:
-              raise SystemExit(f"cancel recovery replacement count={cancel_count}")
-
-          schedule_pattern = re.compile(
-              r"    private fun schedulePendingHeartRateReconnectRecovery\(reason: String\): Boolean \{.*?\n    \}\n\n(?=    private fun cancelHeartRateEarRemovalStop)",
-              re.S,
+          service = replace_section(
+              service,
+              "    private fun cancelHeartRateReconnectRecovery(reason: String, clearPending: Boolean = false) {",
+              "    private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {",
+              cancel_block,
           )
+
           schedule_block = textwrap.dedent(
               '''
                   private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {
@@ -229,9 +251,12 @@ jobs:
                   }
               '''
           ).strip("\n")
-          service, schedule_count = schedule_pattern.subn(schedule_block + "\n\n", service, count=1)
-          if schedule_count != 1:
-              raise SystemExit(f"schedule recovery replacement count={schedule_count}")
+          service = replace_section(
+              service,
+              "    private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {",
+              "    private fun cancelHeartRateEarRemovalStop() {",
+              schedule_block,
+          )
 
           service_path.write_text(service)
           manager_path.write_text(manager)
@@ -239,6 +264,7 @@ jobs:
 
           git diff --check
           grep -q 'pauseHeartRateRtBuddyForRecovery' android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          grep -q 'heartRateReconnectRecoveryJob' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
           grep -q 'CoroutineScope(Dispatchers.IO).launch' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
           grep -q 'recovery remains ear-removal-triggered only' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
           grep -q '!aacpManager.heartRateStreamingRequested' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
