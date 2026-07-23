@@ -1,0 +1,222 @@
+name: Build expected primary role APK
+
+on:
+  pull_request:
+    paths:
+      - .github/expected-primary-role-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Track reported and expected primary roles separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          source = path.read_text()
+
+          def replace_function_range(text, start_signature, end_signature, replacement):
+              signature_pos = text.find(start_signature)
+              if signature_pos < 0:
+                  raise SystemExit(f"start signature not found: {start_signature}")
+              start = text.rfind("\n", 0, signature_pos) + 1
+              end_signature_pos = text.find(end_signature, signature_pos)
+              if end_signature_pos < 0:
+                  raise SystemExit(f"end signature not found: {end_signature}")
+              end = text.rfind("\n", 0, end_signature_pos) + 1
+              return text[:start] + replacement.rstrip() + "\n\n" + text[end:]
+
+          old_field = "    private var currentPrimaryBudRole: Int? = null\n"
+          new_fields = (
+              "    private var reportedPrimaryBudRole: Int? = null\n"
+              "    private var expectedPrimaryBudRole: Int? = null\n"
+          )
+          if source.count(old_field) != 1:
+              raise SystemExit(f"primary role field count={source.count(old_field)}")
+          source = source.replace(old_field, new_fields, 1)
+
+          role_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {
+                      val previousRole = reportedPrimaryBudRole
+                      reportedPrimaryBudRole = role
+                      val hrRequested = ::aacpManager.isInitialized && aacpManager.heartRateStreamingRequested
+                      val roleAgreement = when {
+                          expectedPrimaryBudRole == null -> "no_expectation"
+                          role == expectedPrimaryBudRole -> "match"
+                          role == null -> "reported_unknown"
+                          else -> "mismatch"
+                      }
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_role previous=${budRoleName(previousRole)} reported=${budRoleName(role)} expected=${budRoleName(expectedPrimaryBudRole)} agreement=$roleAgreement hrRequested=$hrRequested pending=$pendingHeartRateReconnectRecovery raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
+                      if (role != null && previousRole != null && previousRole != role) {
+                          Log.d(
+                              TAG,
+                              "HR-ROLE-STATE AirPods reported primary role changed; expected role remains derived from the in-ear bud"
+                          )
+                      }
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          source = replace_function_range(
+              source,
+              "private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {",
+              "private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              role_block,
+          )
+
+          swap_block = textwrap.indent(
+              textwrap.dedent(
+                  '''
+                  private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {
+                      val opcodeValue = opcode.toInt().and(0xFF)
+                      val name = when (opcodeValue) {
+                          0x47 -> "bud_swap_2_procedure"
+                          0x48 -> "swap_imminent_confirm"
+                          0x49 -> "bud_swap_2_completion"
+                          0x4A -> "swap_complete_confirm"
+                          else -> "unknown_swap_$opcodeValue"
+                      }
+                      Log.d(
+                          TAG,
+                          "HR-ROLE-STATE bud_swap_event name=$name reported=${budRoleName(reportedPrimaryBudRole)} expected=${budRoleName(expectedPrimaryBudRole)} requested=${aacpManager.heartRateStreamingRequested} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                      )
+                      Log.d(TAG, "HR-ROLE-STATE swap observed; recovery remains ear-removal-triggered only")
+                  }
+                  '''
+              ).strip("\n"),
+              "    ",
+          )
+          source = replace_function_range(
+              source,
+              "private fun handleBudSwapEventReceived(opcode: Byte, packet: ByteArray) {",
+              "private fun armHeartRateReconnectRecovery(reason: String) {",
+              swap_block,
+          )
+
+          old_ear_block = textwrap.dedent(
+              '''
+                      if (inEarData.count { it } == 2 &&
+                          updatedInEarData.count { it } == 1 &&
+                          ::aacpManager.isInitialized &&
+                          aacpManager.heartRateStreamingRequested
+                      ) {
+                          armHeartRateReconnectRecovery("earbud_removed")
+                          schedulePendingHeartRateReconnectRecovery("earbud_removed_existing_socket")
+                      }
+              '''
+          ).strip("\n")
+          new_ear_block = textwrap.dedent(
+              '''
+                      val inferredExpectedPrimaryBudRole = when {
+                          updatedInEarData.getOrElse(0) { false } &&
+                              !updatedInEarData.getOrElse(1) { false } -> 0x01
+                          !updatedInEarData.getOrElse(0) { false } &&
+                              updatedInEarData.getOrElse(1) { false } -> 0x02
+                          else -> null
+                      }
+                      if (expectedPrimaryBudRole != inferredExpectedPrimaryBudRole) {
+                          Log.d(
+                              TAG,
+                              "HR-ROLE-STATE expected primary changed from ${budRoleName(expectedPrimaryBudRole)} to ${budRoleName(inferredExpectedPrimaryBudRole)} based on in-ear state left=${updatedInEarData.getOrElse(0) { false }} right=${updatedInEarData.getOrElse(1) { false }}"
+                          )
+                      }
+                      expectedPrimaryBudRole = inferredExpectedPrimaryBudRole
+
+                      if (inEarData.count { it } == 2 &&
+                          updatedInEarData.count { it } == 1 &&
+                          ::aacpManager.isInitialized &&
+                          aacpManager.heartRateStreamingRequested
+                      ) {
+                          armHeartRateReconnectRecovery(
+                              "earbud_removed_expected_${budRoleName(expectedPrimaryBudRole)}"
+                          )
+                          schedulePendingHeartRateReconnectRecovery("earbud_removed_existing_socket")
+                      }
+              '''
+          ).strip("\n")
+          if source.count(old_ear_block) != 1:
+              raise SystemExit(f"ear transition block count={source.count(old_ear_block)}")
+          source = source.replace(old_ear_block, new_ear_block, 1)
+
+          old_disconnect = "                    currentPrimaryBudRole = null\n"
+          new_disconnect = (
+              "                    reportedPrimaryBudRole = null\n"
+              "                    Log.d(TAG, \"HR-ROLE-STATE cleared reported primary for fresh socket; preserving expected=${budRoleName(expectedPrimaryBudRole)}\")\n"
+          )
+          if source.count(old_disconnect) != 1:
+              raise SystemExit(f"disconnect role reset count={source.count(old_disconnect)}")
+          source = source.replace(old_disconnect, new_disconnect, 1)
+
+          if "currentPrimaryBudRole" in source:
+              raise SystemExit("stale currentPrimaryBudRole reference remains")
+          if "sendBudRole" in source or "forcePrimary" in source:
+              raise SystemExit("unexpected outbound role-forcing code detected")
+
+          path.write_text(source)
+          PY
+
+          git diff --check
+          grep -q 'reportedPrimaryBudRole' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'expectedPrimaryBudRole' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'agreement=$roleAgreement' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'preserving expected=' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          git commit -m 'Track expected primary role across HR handover'
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifact/LibrePods-HR-expected-primary-role-debug.apk
+          sha256sum artifact/LibrePods-HR-expected-primary-role-debug.apk | tee artifact/LibrePods-HR-expected-primary-role-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-expected-primary-role-debug-APK
+          path: artifact/
+          if-no-files-found: error
