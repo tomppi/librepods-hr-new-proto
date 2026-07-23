@@ -1,0 +1,1 @@
+Trigger reported-primary-role handover verification and APK build.
