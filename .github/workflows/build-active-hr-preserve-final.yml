@@ -1,0 +1,131 @@
+name: Build active HR preserve final APK
+
+on:
+  pull_request:
+    paths:
+      - .github/active-hr-preserve-final-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Preserve active HR request across socket handover
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          service_path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          manager_path = Path("android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt")
+          service = service_path.read_text()
+          manager = manager_path.read_text()
+
+          if "restoreHeartRateRequestForRecovery" not in manager:
+              marker = "private fun sendHeartRateMonitorEnabled(): Boolean {"
+              marker_pos = manager.find(marker)
+              if marker_pos < 0:
+                  raise SystemExit("manager insertion marker not found")
+              line_start = manager.rfind("\n", 0, marker_pos) + 1
+              method = (
+                  "    fun restoreHeartRateRequestForRecovery() {\n"
+                  "        heartRateStreamingRequested = true\n"
+                  "    }\n\n"
+              )
+              manager = manager[:line_start] + method + manager[line_start:]
+
+          start_marker = 'maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")'
+          end_marker = "BluetoothConnectionManager.attSocket = null"
+          start_pos = service.find(start_marker)
+          if start_pos < 0:
+              raise SystemExit("central disconnect start marker not found")
+          start_line = service.rfind("\n", 0, start_pos) + 1
+          indent = service[start_line:start_pos]
+          end_pos = service.find(end_marker, start_pos)
+          if end_pos < 0:
+              raise SystemExit("central disconnect end marker not found")
+          end_line = service.find("\n", end_pos)
+          if end_line < 0:
+              end_line = len(service)
+          else:
+              end_line += 1
+
+          replacement_lines = [
+              'maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")',
+              'val preserveHeartRateRequest =',
+              '    ::aacpManager.isInitialized &&',
+              '        pendingHeartRateReconnectRecovery &&',
+              '        aacpManager.heartRateStreamingRequested',
+              'cancelHeartRateReconnectRecovery("airpods_disconnected")',
+              'currentPrimaryBudRole = null',
+              'if (::aacpManager.isInitialized) {',
+              '    aacpManager.disconnected()',
+              '    if (preserveHeartRateRequest) {',
+              '        aacpManager.restoreHeartRateRequestForRecovery()',
+              '        Log.d(TAG, "HR-RECONNECT-RECOVERY preserved active HR request for fresh AACP socket")',
+              '    }',
+              '}',
+              'BluetoothConnectionManager.aacpSocket = null',
+              'BluetoothConnectionManager.attSocket = null',
+          ]
+          replacement = "\n".join(indent + line if line else "" for line in replacement_lines) + "\n"
+          service = service[:start_line] + replacement + service[end_line:]
+
+          service_path.write_text(service)
+          manager_path.write_text(manager)
+          PY
+
+          git diff --check
+          grep -q 'restoreHeartRateRequestForRecovery' android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          grep -q 'preserveHeartRateRequest' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'CoroutineScope(Dispatchers.IO).launch' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'recovery remains ear-removal-triggered only' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt
+          git commit -m 'Preserve active HR request across socket handover'
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifact/LibrePods-HR-active-only-nonblocking-final-debug.apk
+          sha256sum artifact/LibrePods-HR-active-only-nonblocking-final-debug.apk | tee artifact/LibrePods-HR-active-only-nonblocking-final-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-active-only-nonblocking-final-debug-APK
+          path: artifact/
+          if-no-files-found: error
