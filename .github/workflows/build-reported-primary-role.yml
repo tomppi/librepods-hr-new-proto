@@ -1,0 +1,103 @@
+name: Build reported primary role APK
+
+on:
+  pull_request:
+    paths:
+      - .github/reported-primary-role-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out HR feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/heart-rate-clean
+          fetch-depth: 0
+
+      - name: Use reported primary role across handover
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git revert --no-commit 310e35768ece5ad85ead18e05a03b577ad9f27cb
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt")
+          source = path.read_text()
+
+          old = "                    currentPrimaryBudRole = null\n"
+          new = (
+              "                    if (preserveHeartRateRequest) {\n"
+              "                        Log.d(\n"
+              "                            TAG,\n"
+              "                            \"HR-ROLE-STATE preserving AirPods-reported primary across active handover: ${budRoleName(currentPrimaryBudRole)}\"\n"
+              "                        )\n"
+              "                    } else {\n"
+              "                        currentPrimaryBudRole = null\n"
+              "                    }\n"
+          )
+          if source.count(old) != 1:
+              raise SystemExit(f"disconnect primary reset count={source.count(old)}")
+          source = source.replace(old, new, 1)
+
+          if "reportedPrimaryBudRole" in source or "expectedPrimaryBudRole" in source:
+              raise SystemExit("inferred/reported split still remains")
+          if source.count("currentPrimaryBudRole = role") != 1:
+              raise SystemExit("received BUD_ROLE is not authoritative")
+          if "sendBudRole" in source or "forcePrimary" in source:
+              raise SystemExit("unexpected outbound primary-role command detected")
+
+          path.write_text(source)
+          PY
+
+          git diff --check
+          grep -q 'currentPrimaryBudRole = role' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          grep -q 'preserving AirPods-reported primary across active handover' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          ! grep -q 'expectedPrimaryBudRole' android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+
+          git add android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt
+          git commit -m 'Use reported primary role across HR handover'
+          git push origin HEAD:agent/heart-rate-clean
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Accept licenses and install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.14904198"
+
+      - name: Build FOSS debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleFossDebug --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          APK="$(find android/app/build/outputs/apk/foss/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifact/LibrePods-HR-reported-primary-role-debug.apk
+          sha256sum artifact/LibrePods-HR-reported-primary-role-debug.apk | tee artifact/LibrePods-HR-reported-primary-role-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibrePods-HR-reported-primary-role-debug-APK
+          path: artifact/
+          if-no-files-found: error
